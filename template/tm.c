@@ -1,6 +1,6 @@
 /**
  * @file   tm.c
- * @author [...]
+ * @author Can Kirimca
  *
  * @section LICENSE
  *
@@ -27,6 +27,37 @@
 
 #include "macros.h"
 
+//a struct denoting the segments in which the users write or read
+struct segment_node{
+    struct segment_node* prev; //ptr to next segment
+    struct segment_node* next; //ptr to previous segment
+    uint64_t segment_id;       //id of the segment
+    uint64_t segment_size;     //size of the segment
+    uint64_t alignment;        //alignment = size of a word      
+    shared_t space_ptr;        //pointer to the allocated space 
+};
+typedef struct segment_node* segment_list;
+
+struct region {
+    struct shared_lock_t lock;
+    void* start;     
+    segment_list allocs; 
+    size_t size;       
+    size_t align;  
+};
+
+struct 
+
+//Check if the given number is a power of 2
+bool isPowerOfTwo(size_t n){
+    while(n>1){
+        if(n % 2 != 0)
+            return false;
+        n = n/2;    
+    }
+    return true;
+}
+
 /** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
  * @param size  Size of the first shared segment of memory to allocate (in bytes), must be a positive multiple of the alignment
  * @param align Alignment (in bytes, must be a power of 2) that the shared memory region must support
@@ -34,6 +65,12 @@
 **/
 shared_t tm_create(size_t unused(size), size_t unused(align)) {
     // TODO: tm_create(size_t, size_t)
+    if(size % align != 0)
+        return invalid_shared;
+    if(!isPowerOfTwo(align)) 
+        return invalid_shared;
+    
+
     return invalid_shared;
 }
 
