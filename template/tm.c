@@ -28,7 +28,7 @@
 #include "macros.h"
 
 //a struct denoting the segments in which the users write or read
-struct segment_node{
+typedef struct segment_node{
     struct segment_node* prev; //ptr to next segment
     struct segment_node* next; //ptr to previous segment
     uint64_t segment_id;       //id of the segment
@@ -38,7 +38,7 @@ struct segment_node{
 };
 typedef struct segment_node* segment_list;
 
-struct region {
+typedef struct region {
     struct shared_lock_t lock;
     void* start;     
     segment_list allocs; 
@@ -46,7 +46,29 @@ struct region {
     size_t align;  
 };
 
-struct 
+typedef struct write_node{
+    struct write_node* next;
+};
+typedef struct write_node* write_set;
+
+typedef struct read_node{
+    struct read_node* next;
+};
+typedef struct read_node* read_set;
+
+
+typedef struct transaction{
+    uint64_t id;
+    read_set rs;
+    write_set ws;
+    segment_list allocated_segments;
+    segment_list free_segments;
+
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////types_end//////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //Check if the given number is a power of 2
 bool isPowerOfTwo(size_t n){
@@ -69,7 +91,11 @@ shared_t tm_create(size_t unused(size), size_t unused(align)) {
         return invalid_shared;
     if(!isPowerOfTwo(align)) 
         return invalid_shared;
-    
+
+    region* region = malloc(sizeOf(region));    
+    if (unlikely(!region)) {
+        return invalid_shared;
+    }
 
     return invalid_shared;
 }
