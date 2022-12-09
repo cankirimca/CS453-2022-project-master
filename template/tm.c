@@ -46,15 +46,25 @@ typedef struct region {
     size_t align;  
 };
 
+//struct representing a single write node
 typedef struct write_node{
     struct write_node* next;
 };
-typedef struct write_node* write_set;
+//struct representing the write set containing multiple write_nodes
+typedef struct write_set{
+    struct write_node* head;
+    int size;
+};
 
+//struct representing a single read node
 typedef struct read_node{
     struct read_node* next;
 };
-typedef struct read_node* read_set;
+//struct representing the read set containing multiple read_nodes
+typedef struct read_set{
+    struct read_node* head;
+    int size;
+};
 
 
 typedef struct transaction{
