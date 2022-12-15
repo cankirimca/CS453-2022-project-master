@@ -24,7 +24,7 @@
 
 // Internal headers
 #include <tm.h>
-
+#include <stdatomic.h>
 #include "macros.h"
 
 //a struct denoting the segments in which the users write or read
@@ -34,16 +34,22 @@ typedef struct segment_node{
     uint64_t segment_id;       //id of the segment
     uint64_t segment_size;     //size of the segment
     uint64_t alignment;        //alignment = size of a word      
-    shared_t space_ptr;        //pointer to the allocated space 
+    shared_t allocated_area;        //pointer to the allocated space 
+    struct lock_list lock_list;
 };
-typedef struct segment_node* segment_list;
+typedef struct segment_list{
+    struct segment_node** seg_addresses;
+    unsigned int number_of_segments;
+    _Atomic bool* locks;
+};
 
 typedef struct region {
-    struct shared_lock_t lock;
+    //struct shared_lock_t lock;
     void* start;     
-    segment_list allocs; 
+    struct segment_list allocated_segments; 
     size_t size;       
     size_t align;  
+    unsigned int no_of_segments;
 };
 
 //struct representing a single write node
@@ -69,11 +75,22 @@ typedef struct read_set{
 
 typedef struct transaction{
     uint64_t id;
-    read_set rs;
-    write_set ws;
-    segment_list allocated_segments;
-    segment_list free_segments;
+    struct read_set rs;
+    struct write_set ws;
+    struct segment_list allocated_segments;
+    struct segment_list free_segments;
 
+};
+
+typedef struct lock{
+    _Atomic unsigned long version;
+    _Atomic unsigned long holder;
+    _Atomic bool locked;
+};
+
+typedef struct lock_list{
+    struct lock* list_ptr;
+    unsigned long size;
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -95,26 +112,88 @@ bool isPowerOfTwo(size_t n){
  * @param align Alignment (in bytes, must be a power of 2) that the shared memory region must support
  * @return Opaque shared memory region handle, 'invalid_shared' on failure
 **/
-shared_t tm_create(size_t unused(size), size_t unused(align)) {
+shared_t tm_create(size_t size, size_t align) {
     // TODO: tm_create(size_t, size_t)
     if(size % align != 0)
         return invalid_shared;
     if(!isPowerOfTwo(align)) 
         return invalid_shared;
 
-    region* region = malloc(sizeOf(region));    
+    //initialize region pointer and check if it is unlikely
+    struct region* region = malloc(sizeOf(region)); 
     if (unlikely(!region)) {
         return invalid_shared;
     }
+    region->no_of_segments = 65536;
+    //initialize region segments pointer and check if it is unlikely
+    region->allocated_segments.seg_addresses = (struct segment_node**) malloc(sizeof(struct segment_node*) * region->no_of_segments); //TODO change later
+    region->allocated_segments.locks = malloc(sizeof(_Atomic bool) * region->no_of_segments); //TODO change later
+    if (unlikely(!region->allocated_segments.seg_addresses)) {
+        return invalid_shared;
+    }
+    else if (unlikely(!region->allocated_segments.locks)) {
+        return invalid_shared;
+    }
 
+    struct segment_list temp = region->allocated_segments;
+    for(int j = 0; j < region->no_of_segments; j++){
+        temp.seg_addresses[j] = NULL;
+        temp.locks[j] = false;
+    }
+
+    //TODO initialize previous two mallocs
+
+    //allocate the starting region
+    region->allocated_segments.seg_addresses[0] = malloc(sizeof(struct segment_node));
+
+    struct segment_node* temp_first_node = (struct segment_node*)(region->allocated_segments.seg_addresses[0]);
+
+    //allocate the first space and free the pointer if the allocation is not successful
+    if (posix_memalign(&(temp_first_node->allocated_area), align, size) != 0) {
+        free(temp_first_node);
+        free(region);
+        return invalid_shared;
+    }
+
+    memset(temp_first_node->allocated_area, 0, size);
+    temp_first_node->lock_list.size = size/align; //lock size is equal to the number of words
+    temp_first_node->lock_list.list_ptr = (struct lock*) malloc(sizeof(struct lock)*(size/align));
+
+    if(unlikely(!temp_first_node->lock_list.list_ptr)){
+        free(temp_first_node->allocated_area);
+        free(temp_first_node);
+        free(region);
+        return invalid_shared;
+    }
+
+    for(int j = 0; j < size/align; j++){
+        temp_first_node->lock_list.list_ptr[j].holder = 0;
+        temp_first_node->lock_list.list_ptr[j].version = 0;
+        temp_first_node->lock_list.list_ptr[j].locked = false;
+    }
+
+    region->start = temp_first_node;
+    region->align = align;
+    temp_first_node->segment_size = size;
+    temp_first_node->alignment = align;
+    temp_first_node->segment_id = 0;
     return invalid_shared;
 }
 
 /** Destroy (i.e. clean-up + free) a given shared memory region.
  * @param shared Shared memory region to destroy, with no running transaction
 **/
-void tm_destroy(shared_t unused(shared)) {
+void tm_destroy(shared_t shared) {
     // TODO: tm_destroy(shared_t)
+    struct region* region = shared;
+    for(int j = 0; j < (region->no_of_segments); j++){
+        free(region->allocated_segments.seg_addresses[j]->allocated_area);
+        free(region->allocated_segments.seg_addresses[j]->lock_list);
+        free(region->allocated_segments.seg_addresses[j]);
+    }
+    free(region->allocated_segments.seg_addresses);
+    free(region->allocated_segments.locks);
+    free(region);
 }
 
 /** [thread-safe] Return the start address of the first allocated segment in the shared memory region.
@@ -130,9 +209,10 @@ void* tm_start(shared_t unused(shared)) {
  * @param shared Shared memory region to query
  * @return First allocated segment size
 **/
-size_t tm_size(shared_t unused(shared)) {
-    // TODO: tm_size(shared_t)
-    return 0;
+size_t tm_size(shared_t shared) {
+    struct region* region = shared;
+    struct segment_node* first_segment = region->allocated_segments.seg_addresses[0];
+    return first_segment->segment_size;
 }
 
 /** [thread-safe] Return the alignment (in bytes) of the memory accesses on the given shared memory region.
@@ -140,8 +220,8 @@ size_t tm_size(shared_t unused(shared)) {
  * @return Alignment used globally
 **/
 size_t tm_align(shared_t unused(shared)) {
-    // TODO: tm_align(shared_t)
-    return 0;
+    struct region* region = shared;
+    return region->align;
 }
 
 /** [thread-safe] Begin a new transaction on the given shared memory region.
