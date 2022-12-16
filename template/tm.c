@@ -38,6 +38,7 @@ typedef struct segment_node{
     shared_t allocated_area;        //pointer to the allocated space 
     struct lock_list lock_list;
 };
+
 typedef struct segment_list{
     struct segment_node** seg_addresses;
     unsigned int number_of_segments;
@@ -447,7 +448,7 @@ bool tm_end(shared_t shared, tx_t tx) {
         }
         
     }
-    transaction_cleanup(transaction, true, true, NULL);
+    transaction_cleanup(transaction, true, false, NULL);
     return true;
 }
 
@@ -459,8 +460,24 @@ bool tm_end(shared_t shared, tx_t tx) {
  * @param target Target start address (in a private region)
  * @return Whether the whole transaction can continue
 **/
-bool tm_read(shared_t unused(shared), tx_t unused(tx), void const* unused(source), size_t unused(size), void* unused(target)) {
-    // TODO: tm_read(shared_t, tx_t, void const*, size_t, void*)
+bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
+    struct transaction* transaction = tx;
+    struct region* region = shared;
+
+    struct segment_node* s = region->allocated_segments.seg_addresses[((_Atomic unsigned long)source >> 48)]; 
+    if(s == NULL){
+        transaction_cleanup(transaction, true, false, NULL);
+    }
+    uint64_t noOfWords = size/region->align;
+    uint64_t index = 0;
+    void* src = s->allocated_area + ; //TODO fake space 
+    void* trg = target;
+    while(index < noOfWords){
+        struct lock* lock = (s->lock_list).list_ptr + ((src - s->allocated_area)/region->align);
+        index += 1;
+        trg += region->align;
+        src += region->align;
+    }
     return false;
 }
 
