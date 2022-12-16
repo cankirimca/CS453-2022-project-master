@@ -62,6 +62,7 @@ typedef struct write_node{
     struct segment_node* segment;
     u_int64_t index;
     shared_t word;
+    uint64_t address;
 };
 //struct representing the write set containing multiple write_nodes
 typedef struct write_set{
@@ -100,6 +101,7 @@ typedef struct read_node{
     struct segment_node* segment;
     u_int64_t index;
     shared_t word;
+    uint64_t address;
 };
 //struct representing the read set containing multiple read_nodes
 typedef struct read_set{
@@ -474,11 +476,49 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
     void* trg = target;
     while(index < noOfWords){
         struct lock* lock = (s->lock_list).list_ptr + ((src - s->allocated_area)/region->align);
+        uint64_t tempV =lock->version;
+
+        if(transaction->read_only){
+            memcpy(trg, src, region->align);
+        }
+        else{
+            //check if the value to be read has been written by us before
+            struct write_node* existing_write = transaction->ws.head;
+            while(existing_write != NULL){
+                if(existing_write->address == src){
+                    break; //break with the value set to the desired node
+                }
+                existing_write = existing_write->next;
+            } //if no break, the value will be null
+
+            if(existing_write != NULL){
+                memcpy(trg, existing_write->word, region->align);
+            } 
+            else{
+                memcpy(trg, src, region->align);
+            }
+        }
+
+        bool successful = (lock->version == tempV) && (lock->version <= transaction->version) && (!(lock->locked));
+        
+        if(!successful){
+            transaction_cleanup(transaction, true, false, NULL);
+            return false;
+        }
+
+        if(transaction->read_only){
+            struct read_node* rn = malloc(sizeof(struct read_node));
+            rn->next = NULL;
+            rn->segment = s;
+            rn->index = ((src - s->allocated_area)/region->align);
+            rset_append(&(transaction->rs), rn);
+        }
+
         index += 1;
         trg += region->align;
         src += region->align;
     }
-    return false;
+    return true;
 }
 
 /** [thread-safe] Write operation in the given transaction, source in a private region and target in the shared region.
@@ -490,7 +530,10 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
  * @return Whether the whole transaction can continue
 **/
 bool tm_write(shared_t unused(shared), tx_t unused(tx), void const* unused(source), size_t unused(size), void* unused(target)) {
-    // TODO: tm_write(shared_t, tx_t, void const*, size_t, void*)
+    struct transaction* transaction = tx;
+    struct region* region = shared;
+
+    struct segment_node* s = region->allocated_segments.seg_addresses[((_Atomic unsigned long)source >> 48)]; 
     return false;
 }
 
