@@ -262,7 +262,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         // Get/set/compute run parameters
-        auto const nbworkers = 4;/*[]() {
+        auto const nbworkers = 3;/*[]() {
             auto res = ::std::thread::hardware_concurrency();
             if (unlikely(res == 0))
                 res = 16;
@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
         auto const expnbaccounts = 256 * nbworkers;
         auto const init_balance  = 100ul;
         auto const prob_long     = 0.5f;
-        auto const prob_alloc    = 0.00f;
+        auto const prob_alloc    = 0.03f;
         auto const nbrepeats     = 7;
         auto const seed          = static_cast<Seed>(::std::stoul(argv[1]));
         auto const clk_res       = Chrono::get_resolution();
