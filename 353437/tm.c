@@ -34,7 +34,6 @@ struct transaction{
     struct read_set* rs;
     struct write_set* ws;
     struct segment_node* alloc_head;
-    //struct segment_set free_segments;
     struct region* region;
 };
 
@@ -44,15 +43,9 @@ struct lock{
     _Atomic bool locked;
 };
 
-struct lock_list{
-    struct lock* list_ptr;
-    unsigned long size;
-};
-
 //a struct denoting the segments in which the users write or read
 struct segment_node{
-    struct segment_node* prev; //ptr to next segment
-    struct segment_node* next; //ptr to previous segment
+    struct segment_node* next; //ptr to next segment
     uint64_t segment_id;       //id of the segment
     uint64_t segment_size;     //size of the segment
     uint64_t alignment;        //alignment = size of a word 
@@ -61,12 +54,6 @@ struct segment_node{
     struct lock* locks; //lock array for the words
     uint64_t numberOfLocks;
     struct lock* segment_lock; //just one lock for the segment
-};
-
-struct segment_list{
-    struct segment_node** seg_addresses;
-    unsigned int number_of_segments;
-    _Atomic bool* locks;
 };
 
 struct region {
@@ -110,12 +97,6 @@ struct read_set{
     uint64_t size;
 };
 
-struct segment_set{
-    struct segment_node* head;
-    struct segment_node* tail;
-    int size;
-};
-
 void wset_clear(struct write_set* set){
     struct write_node* head = set->head;
     while(head != NULL){
@@ -145,7 +126,6 @@ void wset_append(struct write_set* set, struct write_node* new_node){
     }
     if(prev != NULL){
         prev->next = new_node;
-        //set->tail = new_node;
     }
     set->size++;
     //printf("in size: %lu\n", set->size);
@@ -208,7 +188,6 @@ bool release(struct transaction* t, struct lock* l){
 }
 
 void transaction_cleanup(struct transaction* t, bool only_sets, bool clear_locks, struct lock** l){
-    //TODO make some changes 
     //printf("\n-----------Transaction cleanup----------------\n");
     
     if(only_sets){
@@ -268,7 +247,6 @@ void segment_append(struct region* r, struct segment_node* segment){
 }
 
 bool segment_remove(struct region* r, struct segment_node* segment){
-    printf("segment remove\n");
     struct region* region = r; 
     struct segment_node* head = region->alloc_head;
     struct segment_node* prev = head;
@@ -284,8 +262,6 @@ bool segment_remove(struct region* r, struct segment_node* segment){
 
     if(head == segment){
         prev->next = head->next;
-        printf("successfully removed segment1\n");
-
         return true;
     }
     else{
@@ -294,8 +270,9 @@ bool segment_remove(struct region* r, struct segment_node* segment){
 }
 
 void t_segment_append(struct region* r, struct transaction* t, struct segment_node* segment){
-    struct region* region = r; 
     struct transaction* transaction = t;
+    if(transaction == NULL)
+        return;
     struct segment_node* head = transaction->alloc_head;
     struct segment_node* prev = head;
 
@@ -307,22 +284,11 @@ void t_segment_append(struct region* r, struct transaction* t, struct segment_no
     while(head != NULL){
         prev = head;
         head = head->next;
-        if(head == NULL)
-            printf("In while, head null\n");
-        if(prev == NULL)
-            printf("In while, prev null\n");
-
     }
-
-    if(prev == NULL)
-        printf("What a sick joke\n");
-    return;
-
     prev->next = segment;
 }
 
-void t_segment_remove(struct region* r, struct transaction* t, struct segment_node* segment){
-    struct region* region = r; 
+bool t_segment_remove(struct region* r, struct transaction* t, struct segment_node* segment){
     struct transaction* transaction = t;
     struct segment_node* head = transaction->alloc_head;
     struct segment_node* prev = head;
@@ -343,6 +309,18 @@ void t_segment_remove(struct region* r, struct transaction* t, struct segment_no
     }
     else{
         return false;
+    }
+}
+
+void segments_clear(struct region* r){
+    struct region* region = r;
+    while(r->alloc_head != NULL){
+        struct segment_node* s = region->alloc_head;
+        region->alloc_head = region->alloc_head->next;
+        free(s->segment_lock);
+        free(s->allocated_address);
+        free(s->locks);
+        free(s);
     }
 }
 
@@ -374,7 +352,6 @@ uint64_t generateTransactionId(struct region* shared){
 **/
 shared_t tm_create(size_t size, size_t align) {
     //printf("-------------------------------------tm_create start");
-    // TODO: tm_create(size_t, size_t)
     if(size % align != 0)
         return invalid_shared;
     if(!isPowerOfTwo(align)) 
@@ -386,11 +363,26 @@ shared_t tm_create(size_t size, size_t align) {
         return invalid_shared;
     }
     //initialize region segments pointer and check if it is unlikely
-    region->alloc_head = (struct segment_node*) malloc(sizeof(struct segment_node)); //TODO change later
+    region->alloc_head = (struct segment_node*) malloc(sizeof(struct segment_node)); 
     if (unlikely(!region->alloc_head)) {
         free(region);
         return invalid_shared;
     }
+
+    region->align = align;
+    region->transaction_id_counter = 1;
+    region->segment_id_counter = 1;
+    region->alloc_head->segment_size = size;
+    region->alloc_head->alignment = align;
+    region->alloc_head->segment_id = 1;
+    region->alloc_head->next = NULL;
+    region->no_of_segments = 1;
+    region->version = 0;
+
+    region->alloc_head->segment_lock = (struct lock*) malloc(sizeof(struct lock));
+    region->alloc_head->segment_lock->holder = 0;
+    region->alloc_head->segment_lock->locked = false;
+    region->alloc_head->segment_lock->version = 0;
 
     region->alloc_head->numberOfLocks = size/align;
     region->alloc_head->locks = (struct lock*) malloc(sizeof(struct lock) * size/align);
@@ -401,16 +393,6 @@ shared_t tm_create(size_t size, size_t align) {
     }    
 
     for(unsigned long i = 0; i < region->alloc_head->numberOfLocks; i++){
-        /*region->segmentSingle->locks[i] = (struct lock*) malloc(sizeof(struct lock));// * region->segmentSingle->numberOfLocks); //TODO change later
-        if (unlikely(!region->segmentSingle->locks[i])) {
-            for(unsigned long j = 0; j < i; j++){
-                free(region->segmentSingle->locks[j]);
-            }
-            free(region->segmentSingle->locks);
-            free(region->segmentSingle);
-            free(region);
-            return invalid_shared;
-        } */
         region->alloc_head->locks[i].holder = 0;
         region->alloc_head->locks[i].version = 0;
         region->alloc_head->locks[i].locked = false;
@@ -418,25 +400,16 @@ shared_t tm_create(size_t size, size_t align) {
 
     //allocate the first space and free the pointer if the allocation is not successful
     if (posix_memalign(&(region->alloc_head->allocated_address), align, size) != 0) {
-        free(region->alloc_head->locks);//freeLocks(region->segmentSingle->locks, true, region->segmentSingle->numberOfLocks);
+        free(region->alloc_head->locks);
         free(region->alloc_head);
         free(region);
         return invalid_shared;
     }
-    memset(region->alloc_head->allocated_address, 0, size);
 
-    //TODO move to the beginning
     region->start = region->alloc_head->allocated_address;
-    region->align = align;
-    region->transaction_id_counter = 1;
-    region->segment_id_counter = 1;
-    region->alloc_head->segment_size = size;
-    region->alloc_head->alignment = align;
-    region->alloc_head->segment_id = 1;
-    region->alloc_head->next = NULL;
-    //region->alloc_head->prev = NULL;
-    region->no_of_segments = 1;
-    region->version = 0;
+
+    //initialize to zero as instructed
+    memset(region->alloc_head->allocated_address, 0, size);
     return region;
 }
 
@@ -444,21 +417,9 @@ shared_t tm_create(size_t size, size_t align) {
  * @param shared Shared memory region to destroy, with no running transaction
 **/
 void tm_destroy(shared_t shared) {
-    //printf("-------------------------------------tm_destroy start");
-
-    // TODO: tm_destroy(shared_t)
+    //return false;
     struct region* region = (struct region*)shared;
-    /*for(int j = 0; j < (region->no_of_segments); j++){
-        free(region->allocated_segments.seg_addresses[j]->allocated_area);
-        free(region->allocated_segments.seg_addresses[j]->lock_list);
-        free(region->allocated_segments.seg_addresses[j]);
-    }
-    free(region->allocated_segments.seg_addresses);
-    free(region->allocated_segments.locks);
-    free(region);*/
-    free(region->alloc_head->allocated_address);
-    free(region->alloc_head->locks);
-    free(region->alloc_head);
+    segments_clear(region);
     free(region);
 }
 
@@ -477,11 +438,7 @@ void* tm_start(shared_t shared) {
  * @return First allocated segment size
 **/
 size_t tm_size(shared_t shared) {
-    //printf("-------------------------------------tm_size start");
-
     struct region* region = shared;
-    //struct segment_node* first_segment = region->allocated_segments.seg_addresses[0];
-    //return first_segment->segment_size;
     return region->alloc_head->segment_size;
 }
 
@@ -501,8 +458,6 @@ size_t tm_align(shared_t shared) {
  * @return Opaque transaction ID, 'invalid_tx' on failure
 **/
 tx_t tm_begin(shared_t shared, bool is_ro) {
-    // TODO: tm_begin(shared_t)
-
     struct transaction* transaction = (struct transaction*) malloc(sizeof(struct transaction));
     struct region* region = shared;
 
@@ -542,22 +497,20 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
  * @return Whether the whole transaction committed
 **/
 bool tm_end(shared_t shared, tx_t tx) {
-    //printf("-------------------------------------tm_end start");
     struct transaction* transaction = (struct transaction*) tx; 
     struct region* region = shared;
-
-    if(!transaction->read_only){
-        //printf("is not read only\n");
-
+    if(transaction->read_only){
+        transaction_cleanup(transaction, true, false, NULL);
+        return true;
+    }
+    else{
         //get all the locks associated with the write set of the transaction
         struct lock** locks = (struct lock**)malloc(sizeof(struct lock*) * transaction->ws->size);
         struct write_node* head = transaction->ws->head;
         u_int64_t k = 0;
-        //printf("size %d\n", transaction->ws->size);
 
-        while(head != NULL){ //TODO consider changing to for loop
+        while(head != NULL){
             locks[k] = (struct lock*) &(head->segment->locks[head->index]);
-            //printf("adding %d\n", locks[k]->locked);
             head = head->next;
             k++;
         }
@@ -565,74 +518,55 @@ bool tm_end(shared_t shared, tx_t tx) {
         //try to lock all locks
         //if a lock cannot be locked, unlock all locked ones
         bool canCommit = true;
-        //printf("size: %lu\n", transaction->ws->size);
-
         for(unsigned long i = 0; i < transaction->ws->size; i++){
             if(!acquire(transaction, locks[i])){
                 //printf("failed at %lu out of %lu\n", i, transaction->ws->size);
                 for(unsigned long j = 0; j < i; j++)
-                    release(transaction, locks[i]);
+                    release(transaction, locks[j]);
                 canCommit = false;
                 break;
             }
             //printf("transaction %lu acquired lock %lu\n", transaction->id, i);
         }
-        _Atomic unsigned long wv;
 
         if(canCommit){            //we can commit
             //printf("\ntransaction %lu can commit\n", transaction->id);
             //if another transaction incremented the version first 
-            _Atomic uint64_t temp1 = __sync_add_and_fetch(&(region->version), 1);
+            _Atomic uint64_t tempV = __sync_add_and_fetch(&(region->version), 1);
 
             //printf("transaction %lu\n", transaction->id);
             //printf("temp %lu\n", temp1);
-            if(transaction->version != temp1 - 1){ 
+            if(transaction->version < tempV - 1){ 
                 struct read_node* rn = transaction->rs->head;
                 while(rn != NULL){
                     struct lock lock = (struct lock) rn->segment->locks[rn->index];
-                    // if the node is read by another, release write locks
-                    if(lock.version > transaction->version){
-                        //printf("\npatladi 1\n");
-                        transaction_cleanup(transaction, false, true, locks);
-                        return false;
-                    }
-
-                    bool another = false;
+                    bool available = true;
                     if(lock.locked){
-                        another = true;
+                        available = false;
                         for(int x = 0; x < transaction->ws->size; x++){
-                            if((struct lock*)(locks[x]) == &(lock)){                       
-                                another = false;
+                            if((struct lock*)(locks[x]) == (struct lock*)&(lock)){                       
+                                available = true;
                                 break;
                             }
                         }
                     }
-                    //check if the lock was locked by another process
-                    
-                    if(another){
-                        //printf("\nlockedbyanother 2\n");
+
+                    if(!available || lock.version > transaction->version){
                         transaction_cleanup(transaction, false, true, locks);
                         return false;
                     }
-                    else
-                        //printf("\nnolockedbyanother 2\n");
 
                     rn = rn->next;
                 }
             }
-
+            //commit all writes
             struct write_node* wn = transaction->ws->head;
             while(wn != NULL){
                 struct segment_node* s = wn->segment;
                 shared_t dest = (shared_t)(s->allocated_address + wn->index * region->align);
                 memcpy(dest, wn->word, region->align);
-                //printf("\nt %lu committed %lu\n", transaction->id,(wn->word));
                 struct lock* locktemp = (struct lock*)&(wn->segment->locks[wn->index]);
-                //printf("\nversion before %lu\n", locktemp->version);
-
-                locktemp->version = temp1;
-                //printf("\nversion after %lu\n", locktemp->version);
-                //printf("\nversion after %lu\n", wn->segment->locks[wn->index].version);
+                locktemp->version = tempV;
                 wn = wn->next;
             }            
             transaction_cleanup(transaction, false, true, locks);
@@ -643,11 +577,8 @@ bool tm_end(shared_t shared, tx_t tx) {
             return false;
         }
         free(locks);
+        return true;
     }
-    //printf("\nis read only \n");
-    transaction_cleanup(transaction, true, false, NULL);
-    //printf("-------------------------------------tm_end end\n");
-    return true;
 }
 
 /** [thread-safe] Read operation in the given transaction, source in the shared region and target in a private region.
@@ -663,31 +594,24 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
     struct transaction* transaction = (struct transaction* )tx;
     struct region* region = shared;
 
-    //todo change for multi segment implementation
-    struct segment_node* s = segment_get(region, (shared_t)source); //.seg_addresses[((_Atomic unsigned long)source >> 48)]; 
+    struct segment_node* s = segment_get(region, (shared_t)source);
 
     if(s == NULL){
-        printf("segment returned NULL\n");
         transaction_cleanup(transaction, true, false, NULL);
         return false;
     }
     uint64_t noOfWords = size/(region->align);
     uint64_t index = 0;
-    void* src = (void*) source; //TODO fake space and multi-segment modification 
+    void* src = (void*) source;
     void* trg = (void*) target;
 
     while(index < noOfWords){
-        /*for(int r = 0; r < s->numberOfLocks; r++){
-            printf("%d\n", s->locks[r].locked);
-        }*/
+
         struct lock lock = (struct lock) s->locks[(src - s->allocated_address)/region->align];
         uint64_t tempV = lock.version;
 
         if(transaction->read_only){
-            //printf("1read before %lu\n", *((uint64_t*)trg));
-            //printf("1read src %lu\n", *((uint64_t*)src));
             memcpy(trg, src, region->align);
-            //printf("1read after %lu\n", *((uint64_t*)trg));
         }
         else{
             //check if the value to be read has been written by us before
@@ -700,18 +624,10 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
             } //if no break, the value will be null
 
             if(existing_write != NULL){
-                //printf("2read before %lu\n", *((uint64_t*)trg));
-                //printf("2read src %lu\n", *((uint64_t*)src));
-                //printf("copying from existing write\n");
                 memcpy(trg, existing_write->word, region->align);  
-                //printf("2read after %lu\n", *((uint64_t*)trg));
-
             } 
             else{
-                //printf("3read before %lu\n", *((uint64_t*)trg));
-                //printf("3read src %lu\n", *((uint64_t*)src));
                 memcpy(trg, src, region->align);
-                //printf("3read after %lu\n", *((uint64_t*)trg));
             }
             struct read_node* rn = (struct read_node*) malloc(sizeof(struct read_node));
             rn->next = NULL;
@@ -723,7 +639,6 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         bool successful = (lock.version == tempV) && (lock.version <= transaction->version) && (!(lock.locked));
         
         if(!successful){
-            //printf("not successful\n");
             transaction_cleanup(transaction, true, false, NULL);
             return false;
         }
@@ -745,77 +660,54 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
  * @return Whether the whole transaction can continue
 **/
 bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
+    //printf("tm_write start--------------------\n");
+
     struct transaction* transaction = (struct transaction*) tx;
 
-    //printf("will write %lu/n", *((uint64_t*)source));
-
-    //printf("-------------------------------------tm_write start");
-
-    //printf(transaction->id);
-    //return false;
     struct region* region = (struct region*)shared;
-    //printf("can %d\n", transaction->id); 
 
-    //TODO change after multi segment imp
-    struct segment_node* s = segment_get(region, (shared_t)target);//allocated_segments.seg_addresses[((_Atomic unsigned long)source >> 48)]; //TODO 48 shift
+    struct segment_node* s = segment_get(region, (shared_t)target);
     if(s == NULL){
-        printf("segment returned null\n");
         transaction_cleanup(transaction, true, false, NULL);
         return false;
     }
 
-    void* src = (void*) source; //TODO fake space and multi-segment modification
+    void* src = (void*) source; 
     void* trg = (void*) target;
     uint64_t noOfWords = size/(region->align);
     uint64_t index = 0;
     int wc = 1;
-    //printf(transaction);
     while(index < noOfWords){
-            //printf("index: %lu\n", index);
-            //printf("nw: %lu\n", noOfWords);
-
-        //if(transaction->ws == NULL)
-            //printf("\nWrite set null!");
         struct write_node* previously_written_node = transaction->ws->head;
-
-
         while(previously_written_node != NULL){
             if(previously_written_node->address == (uint64_t) trg){
-                //printf("found prev written\n");
                 break;
             }
             previously_written_node = previously_written_node->next;
         }
 
         if(previously_written_node == NULL){
-            //return false;
-            void * newSpace = aligned_alloc(region->align, region->align); //TODO consider changing to aligned_alloc
+            void * newSpace;
             //if failed to allocate memory, clean up and return false
-            if(newSpace == NULL){//posix_memalign(&(newSpace), region->align, (region->align * wc)) != 0){
+            if(posix_memalign(&(newSpace), region->align, (region->align * wc)) != 0){
                 transaction_cleanup(transaction, true, false, NULL);
                 return false;
             }
             
             memcpy(newSpace, src, region->align);
             struct write_node* wn = (struct write_node*) malloc(sizeof(struct write_node));
-            //printf("index %lu\n", index);
-            //printf("wnindex %lu\n", ((void*)trg - s->allocated_area)/region->align); 
 
             wn->next = NULL;
             wn->segment = s;
-            wn->index = (uint64_t)((trg - s->allocated_address)/region->align); //TODO review
+            wn->index = (uint64_t)((trg - s->allocated_address)/region->align);
             //printf("assigning %lu to wn index\n", ((trg - s->allocated_area)/region->align));
 
             wn->word = newSpace;
             wn->address = (uint64_t) (s->allocated_address + wn->index * region->align);
             wset_append(transaction->ws, wn);
-            //printf("wrote %lu\n", *((uint64_t*)wn->word));
-
         }
         else{
             memcpy(previously_written_node->word, src, region->align);
-            //printf("wrote %lu\n", *((uint64_t*)previously_written_node->word));
-
         }
         index += 1;
         trg += region->align;
@@ -833,16 +725,18 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
  * @return Whether the whole transaction can continue (success/nomem), or not (abort_alloc)
 **/
 alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
-    printf("tm_alloc start\n");
-    //return false;
-    struct transaction* transaction = (struct transaction*) tx;
     struct region* region = (struct region*)shared;
-    struct segment_node* segment = (struct segment_node*) malloc(sizeof(struct segment_node)); //TODO change later
+    struct segment_node* segment = (struct segment_node*) malloc(sizeof(struct segment_node)); 
 
     if(unlikely(!segment)){
         return nomem_alloc;
     }
     if (posix_memalign(&(segment->allocated_address), region->align, size) != 0) {
+        free(segment);
+        return nomem_alloc;
+    }
+
+    if(unlikely(!segment->allocated_address)){
         free(segment);
         return nomem_alloc;
     }
@@ -852,7 +746,6 @@ alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
     segment->segment_size = size;
     segment->alignment = region->align;
     segment->next = NULL;
-    segment->prev = NULL;
     segment->numberOfLocks = size/region->align;
     segment->locks = (struct lock*) malloc(sizeof(struct lock) * size/region->align);
     if (unlikely(!segment->locks)) {
@@ -865,15 +758,14 @@ alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
         region->alloc_head->locks[i].version = 0;
         region->alloc_head->locks[i].locked = false;
     }
+
     region->no_of_segments = __sync_add_and_fetch(&(region->no_of_segments), 1);
     segment->segment_lock = (struct lock*) malloc(sizeof(struct lock));
     segment->segment_lock->holder = 0;
     segment->segment_lock->locked = false;
     segment->segment_lock->version = 0;
     segment_append(region, segment);
-    t_segment_append(region, transaction, segment);
     memcpy(target, &(segment->allocated_address), sizeof(void*));
-    printf("segment allocated successfully\n");
     return success_alloc;
 }
 
@@ -884,14 +776,19 @@ alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
  * @return Whether the whole transaction can continue
 **/
 bool tm_free(shared_t shared, tx_t tx, void* target) {
-    printf("segment_free start\n");
-    return false;
+    printf("-------------------------------------tm_free start");
+
     struct transaction* transaction = (struct transaction*) tx;
     struct region* region = (struct region*)shared;
     struct segment_node* segment = (struct segment_node*) segment_get(region, target);
 
     t_segment_remove(region, transaction, segment);
     segment_remove(region, segment);
+    region->no_of_segments = __sync_add_and_fetch(&(region->no_of_segments), -1);
+    free(segment->segment_lock);
+    free(segment->allocated_address);
     free(segment);
+                    printf("-------------------------------------tm_free end");
+
     return true;
 }
